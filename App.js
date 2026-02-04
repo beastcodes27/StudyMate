@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import MainNavigator from './src/navigation/MainNavigator';
 import LoadingScreen from './src/components/LoadingScreen';
+import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 
 export default function App() {
   const [isLoading, setIsLoading] = useState(true);
@@ -20,8 +21,33 @@ export default function App() {
   }
 
   return (
-    <NavigationContainer>
+    <ThemeProvider>
+      <AppContent />
+    </ThemeProvider>
+  );
+}
+
+const AppContent = () => {
+  const { theme } = useTheme();
+
+  const baseTheme = theme.isDark ? DarkTheme : DefaultTheme;
+
+  const navigationTheme = {
+    ...baseTheme,
+    colors: {
+      ...baseTheme.colors,
+      primary: theme.colors.primary,
+      background: theme.colors.background,
+      card: theme.colors.card,
+      text: theme.colors.text,
+      border: theme.colors.border,
+      notification: theme.colors.notification,
+    },
+  };
+
+  return (
+    <NavigationContainer theme={navigationTheme}>
       <MainNavigator />
     </NavigationContainer>
   );
-}
+};
