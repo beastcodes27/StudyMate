@@ -3,6 +3,16 @@ import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/
 import MainNavigator from './src/navigation/MainNavigator';
 import LoadingScreen from './src/components/LoadingScreen';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
+import * as Notifications from 'expo-notifications';
+
+// Set up notification handler
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 export default function App() {
   const [isLoading, setIsLoading] = useState(true);

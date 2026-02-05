@@ -15,30 +15,93 @@ import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 
 const TASKS_STORAGE_KEY = '@tasks_list';
 
-const AddTaskScreen = ({ navigation }) => {
+// Function to request permissions
+async function requestPermissions() {
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+    if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+    }
+    return finalStatus === 'granted';
+}
+
+const AddTaskScreen = ({ navigation, route }) => {
     const { theme } = useTheme();
+    const editTask = route.params?.task;
 
     // State
-    const [title, setTitle] = useState('');
-    const [description, setDescription] = useState('');
-    const [category, setCategory] = useState('Study');
+    const [title, setTitle] = useState(editTask?.title || '');
+    const [description, setDescription] = useState(editTask?.description || '');
+    const [category, setCategory] = useState(editTask?.category || 'Study');
     const [customCategory, setCustomCategory] = useState('');
-    const [priority, setPriority] = useState('Medium');
-    const [dueDate, setDueDate] = useState(new Date());
-    const [showDatePicker, setShowDatePicker] = useState(false);
+    const [priority, setPriority] = useState(editTask?.priority || 'Medium');
+    const [startTime, setStartTime] = useState(editTask?.startTime ? new Date(editTask.startTime) : new Date());
+    const [endTime, setEndTime] = useState(editTask?.endTime ? new Date(editTask.endTime) : new Date(new Date().getTime() + 3600000));
+    const [showStartTimePicker, setShowStartTimePicker] = useState(false);
+    const [showEndTimePicker, setShowEndTimePicker] = useState(false);
     const [showSuccessPopup, setShowSuccessPopup] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
 
     const categories = ['Study', 'Project', 'Exam', 'Exercise', 'Other'];
     const priorities = ['Low', 'Medium', 'High'];
 
-    const onDateChange = (event, selectedDate) => {
-        const currentDate = selectedDate || dueDate;
-        setShowDatePicker(false);
-        setDueDate(currentDate);
+    // Dynamic Header Title
+    React.useLayoutEffect(() => {
+        navigation.setOptions({
+            headerTitle: editTask ? 'Edit Task' : 'Add Task'
+        });
+    }, [navigation, editTask]);
+
+    // Sync state with route params
+    React.useEffect(() => {
+        if (editTask) {
+            setTitle(editTask.title || '');
+            setDescription(editTask.description || '');
+            if (categories.includes(editTask.category)) {
+                setCategory(editTask.category);
+                setCustomCategory('');
+            } else {
+                setCategory('Other');
+                setCustomCategory(editTask.category);
+            }
+            setPriority(editTask.priority || 'Medium');
+            setStartTime(new Date(editTask.startTime));
+            setEndTime(new Date(editTask.endTime));
+        } else {
+            // Reset to defaults for a new task
+            setTitle('');
+            setDescription('');
+            setCategory('Study');
+            setCustomCategory('');
+            setPriority('Medium');
+            const now = new Date();
+            // Round to next hour for better UX
+            const start = new Date(now.getTime() + 3600000);
+            start.setMinutes(0, 0, 0);
+            setStartTime(start);
+            setEndTime(new Date(start.getTime() + 3600000));
+        }
+    }, [editTask]);
+
+    const onStartTimeChange = (event, selectedDate) => {
+        const currentDate = selectedDate || startTime;
+        setShowStartTimePicker(false);
+        setStartTime(currentDate);
+        // Automatically set end time to 1 hour after start time if end time is before new start time
+        if (endTime <= currentDate) {
+            setEndTime(new Date(currentDate.getTime() + 3600000));
+        }
+    };
+
+    const onEndTimeChange = (event, selectedDate) => {
+        const currentDate = selectedDate || endTime;
+        setShowEndTimePicker(false);
+        setEndTime(currentDate);
     };
 
     const handleSaveTask = async () => {
@@ -52,24 +115,82 @@ const AddTaskScreen = ({ navigation }) => {
             return;
         }
 
+        // Validation for future time
+        if (startTime <= new Date()) {
+            Alert.alert('Invalid Time', 'Please set a valid future start time for this task.');
+            return;
+        }
+
+        if (endTime <= startTime) {
+            Alert.alert('Invalid Time', 'End time must be after the start time.');
+            return;
+        }
+
         setIsSaving(true);
         try {
+            const hasPermission = await requestPermissions();
             const finalCategory = category === 'Other' ? customCategory : category;
-
-            const newTask = {
-                id: Date.now().toString(),
-                title,
-                description,
-                category: finalCategory,
-                priority,
-                dueDate: dueDate.toISOString(),
-                completed: false,
-                createdAt: new Date().toISOString()
-            };
 
             const existingTasksJson = await AsyncStorage.getItem(TASKS_STORAGE_KEY);
             let tasks = existingTasksJson ? JSON.parse(existingTasksJson) : [];
-            tasks.unshift(newTask); // Add new task to the beginning
+
+            // Schedule notification
+            let notificationId = null;
+            if (hasPermission) {
+                try {
+                    // If editing, cancel the previous notification
+                    if (editTask?.notificationId) {
+                        await Notifications.cancelScheduledNotificationAsync(editTask.notificationId);
+                    }
+
+                    const secondsFromNow = Math.floor((startTime.getTime() - Date.now()) / 1000);
+
+                    notificationId = await Notifications.scheduleNotificationAsync({
+                        content: {
+                            title: "StudyMate Reminder 📚",
+                            body: `${title} time is now! Start a ${finalCategory} session.`,
+                            sound: true,
+                            priority: Notifications.AndroidImportance.HIGH,
+                        },
+                        trigger: {
+                            seconds: Math.max(1, secondsFromNow),
+                            repeats: false
+                        },
+                    });
+                } catch (notifError) {
+                    console.error('Notification scheduling failed:', notifError);
+                    // We don't block saving the task if notifications fail
+                }
+            }
+
+            if (editTask) {
+                // Update existing task
+                tasks = tasks.map(t => t.id === editTask.id ? {
+                    ...t,
+                    title,
+                    description,
+                    category: finalCategory,
+                    priority,
+                    startTime: startTime.toISOString(),
+                    endTime: endTime.toISOString(),
+                    notificationId: notificationId || t.notificationId
+                } : t);
+            } else {
+                // Create new task
+                const newTask = {
+                    id: Date.now().toString(),
+                    title,
+                    description,
+                    category: finalCategory,
+                    priority,
+                    startTime: startTime.toISOString(),
+                    endTime: endTime.toISOString(),
+                    completed: false,
+                    createdAt: new Date().toISOString(),
+                    notificationId
+                };
+                tasks.unshift(newTask);
+            }
 
             await AsyncStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
 
@@ -177,32 +298,62 @@ const AddTaskScreen = ({ navigation }) => {
                         onSelect={setPriority}
                     />
 
-                    <View style={styles.inputGroup}>
-                        <Text style={[styles.label, { color: theme.colors.text }]}>Due Date</Text>
-                        <TouchableOpacity
-                            onPress={() => setShowDatePicker(true)}
-                            style={[styles.input, {
-                                borderColor: theme.colors.border,
-                                backgroundColor: theme.colors.card,
-                                flexDirection: 'row',
-                                justifyContent: 'space-between',
-                                alignItems: 'center'
-                            }]}
-                        >
-                            <Text style={{ color: theme.colors.text }}>
-                                {dueDate.toLocaleDateString()} at {dueDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </Text>
-                            <Ionicons name="calendar-outline" size={20} color={theme.colors.primary} />
-                        </TouchableOpacity>
-                        {showDatePicker && (
-                            <DateTimePicker
-                                value={dueDate}
-                                mode="datetime"
-                                is24Hour={true}
-                                display="default"
-                                onChange={onDateChange}
-                            />
-                        )}
+                    <View style={styles.timeRow}>
+                        <View style={[styles.inputGroup, { flex: 1, marginRight: 10 }]}>
+                            <Text style={[styles.label, { color: theme.colors.text }]}>Starting Time</Text>
+                            <TouchableOpacity
+                                onPress={() => setShowStartTimePicker(true)}
+                                style={[styles.input, {
+                                    borderColor: theme.colors.border,
+                                    backgroundColor: theme.colors.card,
+                                    flexDirection: 'row',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center'
+                                }]}
+                            >
+                                <Text style={{ color: theme.colors.text, fontSize: 13 }}>
+                                    {startTime.toLocaleDateString()} {startTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </Text>
+                                <Ionicons name="time-outline" size={18} color={theme.colors.primary} />
+                            </TouchableOpacity>
+                            {showStartTimePicker && (
+                                <DateTimePicker
+                                    value={startTime}
+                                    mode="datetime"
+                                    is24Hour={true}
+                                    display="default"
+                                    onChange={onStartTimeChange}
+                                />
+                            )}
+                        </View>
+
+                        <View style={[styles.inputGroup, { flex: 1 }]}>
+                            <Text style={[styles.label, { color: theme.colors.text }]}>Ending Time</Text>
+                            <TouchableOpacity
+                                onPress={() => setShowEndTimePicker(true)}
+                                style={[styles.input, {
+                                    borderColor: theme.colors.border,
+                                    backgroundColor: theme.colors.card,
+                                    flexDirection: 'row',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center'
+                                }]}
+                            >
+                                <Text style={{ color: theme.colors.text, fontSize: 13 }}>
+                                    {endTime.toLocaleDateString()} {endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </Text>
+                                <Ionicons name="time-outline" size={18} color={theme.colors.primary} />
+                            </TouchableOpacity>
+                            {showEndTimePicker && (
+                                <DateTimePicker
+                                    value={endTime}
+                                    mode="datetime"
+                                    is24Hour={true}
+                                    display="default"
+                                    onChange={onEndTimeChange}
+                                />
+                            )}
+                        </View>
                     </View>
 
                     <TouchableOpacity
@@ -211,7 +362,7 @@ const AddTaskScreen = ({ navigation }) => {
                         disabled={isSaving}
                     >
                         <Text style={styles.saveButtonText}>
-                            {isSaving ? 'Saving...' : 'Create Task'}
+                            {isSaving ? 'Saving...' : (editTask ? 'Update Task' : 'Create Task')}
                         </Text>
                     </TouchableOpacity>
                 </View>
@@ -229,14 +380,17 @@ const AddTaskScreen = ({ navigation }) => {
                         <View style={[styles.successIconContainer, { backgroundColor: theme.colors.primary + '20' }]}>
                             <Ionicons name="checkmark-done" size={50} color={theme.colors.primary} />
                         </View>
-                        <Text style={[styles.successTitle, { color: theme.colors.text }]}>Task Created!</Text>
+                        <Text style={[styles.successTitle, { color: theme.colors.text }]}>
+                            {editTask ? 'Task Updated!' : 'Task Created!'}
+                        </Text>
                         <Text style={[styles.successMessage, { color: theme.colors.text, opacity: 0.7 }]}>
-                            Your task "{title}" has been successfully added to your list.
+                            Your task "{title}" has been successfully {editTask ? 'updated' : 'added'} to your list.
                         </Text>
                         <TouchableOpacity
                             style={[styles.closePopupButton, { backgroundColor: theme.colors.primary }]}
                             onPress={() => {
                                 setShowSuccessPopup(false);
+                                navigation.setParams({ task: undefined });
                                 navigation.goBack();
                             }}
                         >
@@ -255,6 +409,10 @@ const styles = StyleSheet.create({
     },
     content: {
         padding: 20,
+    },
+    timeRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
     },
     inputGroup: {
         marginBottom: 20,

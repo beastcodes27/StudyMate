@@ -107,9 +107,9 @@ const SettingsScreen = () => {
                     onPress={() => setModalVisible(true)}
                 />
 
-                <SectionHeader title="Data" />
+                <SectionHeader title="Danger Zone" />
                 <SettingItem
-                    icon="trash"
+                    icon="warning"
                     title="Reset App Data"
                     type="link"
                     color={theme.colors.notification}
