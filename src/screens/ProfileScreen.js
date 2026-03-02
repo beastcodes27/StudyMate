@@ -319,6 +319,11 @@ const ProfileScreen = () => {
                                 </View>
                                 <View style={[styles.statDivider, { backgroundColor: theme.colors.border }]} />
                                 <View style={styles.statItem}>
+                                    <Text style={[styles.statLabel, { color: theme.colors.primary }]}>Gender</Text>
+                                    <Text style={[styles.statValue, { color: theme.colors.text }]}>{gender || '--'}</Text>
+                                </View>
+                                <View style={[styles.statDivider, { backgroundColor: theme.colors.border }]} />
+                                <View style={styles.statItem}>
                                     <Text style={[styles.statLabel, { color: theme.colors.primary }]}>Born</Text>
                                     <Text style={[styles.statValue, { color: theme.colors.text }]}>
                                         {dob instanceof Date ? dob.toLocaleDateString() : dob}

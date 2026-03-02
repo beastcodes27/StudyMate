@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
     View,
     Text,
@@ -99,9 +99,23 @@ const TasksScreen = ({ navigation }) => {
         }
     };
 
+    const formatTimeRange = (start, end) => {
+        try {
+            const startDate = new Date(start);
+            const endDate = new Date(end);
+            if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return "Time unavailable";
+
+            return `${startDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} • ${startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        } catch (e) {
+            return "Time unavailable";
+        }
+    };
+
     const renderTaskItem = ({ item }) => {
         const isExpanded = expandedTaskId === item.id;
-        const isEnded = new Date(item.endTime) < new Date();
+        const startTime = new Date(item.startTime);
+        const endTime = new Date(item.endTime);
+        const isEnded = !isNaN(endTime.getTime()) && endTime < new Date();
 
         return (
             <TouchableOpacity
@@ -150,7 +164,7 @@ const TasksScreen = ({ navigation }) => {
                                     styles.simpleTimeText,
                                     { color: isEnded ? theme.colors.notification : theme.colors.text, opacity: 0.6 }
                                 ]}>
-                                    {isEnded ? "Event Ended" : `${new Date(item.startTime).toLocaleDateString([], { month: 'short', day: 'numeric' })} • ${new Date(item.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${new Date(item.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
+                                    {isEnded ? "Event Ended" : formatTimeRange(item.startTime, item.endTime)}
                                 </Text>
                             </View>
                         </View>
@@ -227,21 +241,79 @@ const TasksScreen = ({ navigation }) => {
     };
 
     const completedTasksCount = tasks.filter(task => task.completed).length;
-    const now = new Date();
+    const [currentTime, setCurrentTime] = useState(new Date());
+
+    // Update time every 10 seconds for a more 'live' feel
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setCurrentTime(new Date());
+        }, 10000);
+        return () => clearInterval(timer);
+    }, []);
+
+    // Auto-complete tasks when they end
+    useEffect(() => {
+        const checkAutoCompletion = async () => {
+            let changed = false;
+            const now = new Date();
+
+            const updatedTasks = tasks.map(task => {
+                const endTime = new Date(task.endTime);
+                // If task is not completed, and current time passed end time
+                if (!task.completed && now > endTime) {
+                    changed = true;
+                    return { ...task, completed: true };
+                }
+                return task;
+            });
+
+            if (changed) {
+                setTasks(updatedTasks);
+                await AsyncStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(updatedTasks));
+            }
+        };
+
+        if (tasks.length > 0) {
+            checkAutoCompletion();
+        }
+    }, [currentTime, tasks]);
+
+    const ongoingTasks = tasks.filter(task => {
+        const start = new Date(task.startTime);
+        const end = new Date(task.endTime);
+        return !task.completed && currentTime >= start && currentTime <= end;
+    });
+
+    const inProgressCount = ongoingTasks.length;
+
+    // Calculate progress for the task ending soonest
+    let currentProgress = 0;
+    let mainTaskTitle = "Ongoing Sessions";
+    let mainTaskSubtitle = "Tasks currently in progress";
+
+    if (inProgressCount > 0) {
+        // Sort to find the one ending soonest
+        const activeTask = ongoingTasks.sort((a, b) => new Date(a.endTime) - new Date(b.endTime))[0];
+        const start = new Date(activeTask.startTime).getTime();
+        const end = new Date(activeTask.endTime).getTime();
+        const now = currentTime.getTime();
+
+        currentProgress = Math.min(100, Math.max(0, ((now - start) / (end - start)) * 100));
+
+        if (inProgressCount === 1) {
+            mainTaskTitle = activeTask.title;
+            mainTaskSubtitle = "Session in progress...";
+        }
+    }
 
     // Only count tasks that are completed OR have already reached their start time
-    const dueTasksCount = tasks.filter(task => task.completed || new Date(task.startTime) <= now).length;
+    const dueTasksCount = tasks.filter(task => task.completed || new Date(task.startTime) <= currentTime).length;
 
     const completionPercentage = dueTasksCount > 0
         ? Math.round((completedTasksCount / dueTasksCount) * 100)
         : 0;
 
     const activeTasksCount = tasks.filter(task => !task.completed).length;
-    const inProgressCount = tasks.filter(task => {
-        const start = new Date(task.startTime);
-        const end = new Date(task.endTime);
-        return !task.completed && now >= start && now <= end;
-    }).length;
 
     const sortedTasks = [...tasks].sort((a, b) => {
         // First priority: Completion status (uncompleted first)
@@ -250,8 +322,8 @@ const TasksScreen = ({ navigation }) => {
         }
 
         // Second priority: If uncompleted, show those that haven't ended yet first
-        const aEnded = new Date(a.endTime) < now;
-        const bEnded = new Date(b.endTime) < now;
+        const aEnded = new Date(a.endTime) < currentTime;
+        const bEnded = new Date(b.endTime) < currentTime;
         if (aEnded !== bEnded) {
             return aEnded ? 1 : -1;
         }
@@ -262,19 +334,23 @@ const TasksScreen = ({ navigation }) => {
 
     const renderHeader = () => (
         <View style={styles.headerContainer}>
-            {/* Main Tracker: In Progress */}
+            {/* Main Tracker: Dynamic Progress */}
             <View style={[styles.mainProgressCard, { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary }]}>
                 <View style={styles.mainProgressInfo}>
-                    <View>
-                        <Text style={styles.mainProgressTitle}>Ongoing Sessions</Text>
-                        <Text style={styles.mainProgressSubtitle}>Tasks currently in progress</Text>
+                    <View style={{ flex: 1, marginRight: 10 }}>
+                        <Text style={styles.mainProgressTitle} numberOfLines={1}>{mainTaskTitle}</Text>
+                        <Text style={styles.mainProgressSubtitle}>{mainTaskSubtitle}</Text>
                     </View>
                     <View style={styles.mainProgressValueContainer}>
-                        <Text style={styles.mainProgressValue}>{inProgressCount}</Text>
+                        {inProgressCount > 0 ? (
+                            <Text style={styles.mainProgressValue}>{Math.round(currentProgress)}%</Text>
+                        ) : (
+                            <Text style={styles.mainProgressValue}>{inProgressCount}</Text>
+                        )}
                     </View>
                 </View>
                 <View style={[styles.mainProgressBar, { backgroundColor: 'rgba(255,255,255,0.2)' }]}>
-                    <View style={[styles.mainProgressBarFill, { width: inProgressCount > 0 ? '100%' : '0%' }]} />
+                    <View style={[styles.mainProgressBarFill, { width: inProgressCount > 0 ? `${currentProgress}%` : '0%' }]} />
                 </View>
             </View>
 

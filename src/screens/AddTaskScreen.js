@@ -88,20 +88,67 @@ const AddTaskScreen = ({ navigation, route }) => {
         }
     }, [editTask]);
 
+    // State for stabilizing minimum date across renders
+    const [pickerMinDate, setPickerMinDate] = useState(new Date());
+
     const onStartTimeChange = (event, selectedDate) => {
+        if (event.type === 'dismissed') {
+            setShowStartTimePicker(false);
+            return;
+        }
+
         const currentDate = selectedDate || startTime;
         setShowStartTimePicker(false);
-        setStartTime(currentDate);
-        // Automatically set end time to 1 hour after start time if end time is before new start time
-        if (endTime <= currentDate) {
-            setEndTime(new Date(currentDate.getTime() + 3600000));
+
+        // Ensure currentDate is a valid Date object
+        const validDate = (currentDate instanceof Date && !isNaN(currentDate))
+            ? currentDate
+            : new Date();
+
+        setStartTime(validDate);
+
+        // Automatically adjust end time if it's before the new start time
+        if (endTime <= validDate) {
+            setEndTime(new Date(validDate.getTime() + 3600000));
         }
     };
 
     const onEndTimeChange = (event, selectedDate) => {
+        if (event.type === 'dismissed') {
+            setShowEndTimePicker(false);
+            return;
+        }
+
         const currentDate = selectedDate || endTime;
         setShowEndTimePicker(false);
-        setEndTime(currentDate);
+
+        // Ensure currentDate is a valid Date object
+        const validDate = (currentDate instanceof Date && !isNaN(currentDate))
+            ? currentDate
+            : new Date();
+
+        setEndTime(validDate);
+    };
+
+    const formatDate = (date) => {
+        try {
+            if (!date) return 'Select Time';
+            const d = date instanceof Date ? date : new Date(date);
+            if (isNaN(d.getTime())) return 'Select Time';
+            return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        } catch (e) {
+            return 'Select Time';
+        }
+    };
+
+    const openStartTimePicker = () => {
+        setPickerMinDate(new Date());
+        setShowStartTimePicker(true);
+    };
+
+    const openEndTimePicker = () => {
+        setPickerMinDate(startTime || new Date());
+        setShowEndTimePicker(true);
     };
 
     const handleSaveTask = async () => {
@@ -116,12 +163,16 @@ const AddTaskScreen = ({ navigation, route }) => {
         }
 
         // Validation for future time
-        if (startTime <= new Date()) {
-            Alert.alert('Invalid Time', 'Please set a valid future start time for this task.');
+        const now = new Date();
+        const startCheck = startTime instanceof Date ? startTime : new Date(startTime);
+        const endCheck = endTime instanceof Date ? endTime : new Date(endTime);
+
+        if (isNaN(startCheck.getTime()) || startCheck.getTime() < now.getTime() - 60000) {
+            Alert.alert('Invalid Time', 'Tasks cannot be scheduled in the past. Please select a future time.');
             return;
         }
 
-        if (endTime <= startTime) {
+        if (isNaN(endCheck.getTime()) || endCheck.getTime() <= startCheck.getTime()) {
             Alert.alert('Invalid Time', 'End time must be after the start time.');
             return;
         }
@@ -131,35 +182,74 @@ const AddTaskScreen = ({ navigation, route }) => {
             const hasPermission = await requestPermissions();
             const finalCategory = category === 'Other' ? customCategory : category;
 
+            // Fetch username for notifications
+            const profileJson = await AsyncStorage.getItem('@user_profile');
+            const profile = profileJson ? JSON.parse(profileJson) : { username: 'Student' };
+            const userName = profile.username || 'Student';
+
             const existingTasksJson = await AsyncStorage.getItem(TASKS_STORAGE_KEY);
             let tasks = existingTasksJson ? JSON.parse(existingTasksJson) : [];
 
-            // Schedule notification
-            let notificationId = null;
+            // Schedule notifications
+            let notificationIds = [];
             if (hasPermission) {
                 try {
-                    // If editing, cancel the previous notification
-                    if (editTask?.notificationId) {
-                        await Notifications.cancelScheduledNotificationAsync(editTask.notificationId);
+                    // If editing, cancel the previous notifications
+                    if (editTask?.notificationIds) {
+                        for (const id of editTask.notificationIds) {
+                            if (id) await Notifications.cancelScheduledNotificationAsync(id).catch(() => { });
+                        }
                     }
 
-                    const secondsFromNow = Math.floor((startTime.getTime() - Date.now()) / 1000);
+                    const nowMs = Date.now();
+                    const startMs = startCheck.getTime();
+                    const endMs = endCheck.getTime();
 
-                    notificationId = await Notifications.scheduleNotificationAsync({
-                        content: {
-                            title: "StudyMate Reminder 📚",
-                            body: `${title} time is now! Start a ${finalCategory} session.`,
-                            sound: true,
-                            priority: Notifications.AndroidImportance.HIGH,
-                        },
-                        trigger: {
-                            seconds: Math.max(1, secondsFromNow),
-                            repeats: false
-                        },
-                    });
+                    // 1. Approaching (5 minutes before - if far enough in future)
+                    const fiveMinsBefore = startMs - (5 * 60 * 1000);
+                    if (fiveMinsBefore > nowMs) {
+                        const id = await Notifications.scheduleNotificationAsync({
+                            content: {
+                                title: "Upcoming Event ⏰",
+                                body: `Hello ${userName}, ${title} is approaching!`,
+                                sound: true,
+                            },
+                            trigger: { date: new Date(fiveMinsBefore) },
+                        }).catch(() => null);
+                        if (id) notificationIds.push(id);
+                    }
+
+                    // 2. Started
+                    if (startMs > nowMs) {
+                        const id = await Notifications.scheduleNotificationAsync({
+                            content: {
+                                title: "Task Starting! 📚",
+                                body: `Hello ${userName}, ${title} is started.`,
+                                sound: true,
+                            },
+                            trigger: { date: startCheck },
+                        }).catch(() => null);
+                        if (id) notificationIds.push(id);
+                    }
+
+                    // 3. Ended
+                    if (endMs > nowMs) {
+                        const id = await Notifications.scheduleNotificationAsync({
+                            content: {
+                                title: "Task Finished ✅",
+                                body: `Hello ${userName}, ${title} is ended.`,
+                                sound: true,
+                            },
+                            trigger: { date: endCheck },
+                        }).catch(() => null);
+                        if (id) notificationIds.push(id);
+                    }
+
+                    // Immediate success alert as requested
+                    Alert.alert('Success', `Hello ${userName}, you have successfully added an ${title} event`);
+
                 } catch (notifError) {
                     console.error('Notification scheduling failed:', notifError);
-                    // We don't block saving the task if notifications fail
                 }
             }
 
@@ -171,9 +261,9 @@ const AddTaskScreen = ({ navigation, route }) => {
                     description,
                     category: finalCategory,
                     priority,
-                    startTime: startTime.toISOString(),
-                    endTime: endTime.toISOString(),
-                    notificationId: notificationId || t.notificationId
+                    startTime: startCheck.toISOString(),
+                    endTime: endCheck.toISOString(),
+                    notificationIds: notificationIds.length > 0 ? notificationIds : (t.notificationIds || [])
                 } : t);
             } else {
                 // Create new task
@@ -183,17 +273,16 @@ const AddTaskScreen = ({ navigation, route }) => {
                     description,
                     category: finalCategory,
                     priority,
-                    startTime: startTime.toISOString(),
-                    endTime: endTime.toISOString(),
+                    startTime: startCheck.toISOString(),
+                    endTime: endCheck.toISOString(),
                     completed: false,
                     createdAt: new Date().toISOString(),
-                    notificationId
+                    notificationIds
                 };
                 tasks.unshift(newTask);
             }
 
             await AsyncStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
-
             setShowSuccessPopup(true);
         } catch (e) {
             Alert.alert('Error', 'Failed to save task');
@@ -302,7 +391,7 @@ const AddTaskScreen = ({ navigation, route }) => {
                         <View style={[styles.inputGroup, { flex: 1, marginRight: 10 }]}>
                             <Text style={[styles.label, { color: theme.colors.text }]}>Starting Time</Text>
                             <TouchableOpacity
-                                onPress={() => setShowStartTimePicker(true)}
+                                onPress={openStartTimePicker}
                                 style={[styles.input, {
                                     borderColor: theme.colors.border,
                                     backgroundColor: theme.colors.card,
@@ -312,16 +401,17 @@ const AddTaskScreen = ({ navigation, route }) => {
                                 }]}
                             >
                                 <Text style={{ color: theme.colors.text, fontSize: 13 }}>
-                                    {startTime.toLocaleDateString()} {startTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    {formatDate(startTime)}
                                 </Text>
                                 <Ionicons name="time-outline" size={18} color={theme.colors.primary} />
                             </TouchableOpacity>
                             {showStartTimePicker && (
                                 <DateTimePicker
-                                    value={startTime}
+                                    value={startTime instanceof Date && !isNaN(startTime) ? startTime : new Date()}
                                     mode="datetime"
                                     is24Hour={true}
                                     display="default"
+                                    minimumDate={pickerMinDate}
                                     onChange={onStartTimeChange}
                                 />
                             )}
@@ -330,7 +420,7 @@ const AddTaskScreen = ({ navigation, route }) => {
                         <View style={[styles.inputGroup, { flex: 1 }]}>
                             <Text style={[styles.label, { color: theme.colors.text }]}>Ending Time</Text>
                             <TouchableOpacity
-                                onPress={() => setShowEndTimePicker(true)}
+                                onPress={openEndTimePicker}
                                 style={[styles.input, {
                                     borderColor: theme.colors.border,
                                     backgroundColor: theme.colors.card,
@@ -340,16 +430,17 @@ const AddTaskScreen = ({ navigation, route }) => {
                                 }]}
                             >
                                 <Text style={{ color: theme.colors.text, fontSize: 13 }}>
-                                    {endTime.toLocaleDateString()} {endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    {formatDate(endTime)}
                                 </Text>
                                 <Ionicons name="time-outline" size={18} color={theme.colors.primary} />
                             </TouchableOpacity>
                             {showEndTimePicker && (
                                 <DateTimePicker
-                                    value={endTime}
+                                    value={endTime instanceof Date && !isNaN(endTime) ? endTime : new Date()}
                                     mode="datetime"
                                     is24Hour={true}
                                     display="default"
+                                    minimumDate={pickerMinDate}
                                     onChange={onEndTimeChange}
                                 />
                             )}
